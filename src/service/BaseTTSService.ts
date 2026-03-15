@@ -167,6 +167,8 @@ export abstract class BaseTTSService implements TTSService {
   stopAudio() {
     this.audio.pause();
     this.audio.currentTime = 0;
+    this.audio.src = "";
+    this.clearCachedAudio();
   }
 
   rewindAudio() {

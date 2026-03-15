@@ -13,17 +13,18 @@ export class MarkdownHelper {
     let content = "";
 
     if (activeView) {
+      const title = this.getActiveFileTitle();
       content = activeView.editor.getValue();
-      return content;
+      return title ? `# ${title}\n\n${content}` : content;
     }
 
     // If no MarkdownView is active, try to get the active file
     const activeFile = this.app.workspace.getActiveFile();
     if (activeFile && activeFile instanceof TFile) {
       try {
-        // Read the file content directly
+        const title = activeFile.basename;
         content = await this.app.vault.cachedRead(activeFile);
-        return content;
+        return title ? `# ${title}\n\n${content}` : content;
       } catch (error) {
         console.error("Error reading active file:", error);
         return "Error reading the active file.";
@@ -37,5 +38,10 @@ export class MarkdownHelper {
   getActiveFilePath(): string | null {
     const activeFile = this.app.workspace.getActiveFile();
     return activeFile?.path || null;
+  }
+
+  private getActiveFileTitle(): string | null {
+    const activeFile = this.app.workspace.getActiveFile();
+    return activeFile?.basename || null;
   }
 }

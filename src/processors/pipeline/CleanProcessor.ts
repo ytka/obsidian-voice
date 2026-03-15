@@ -113,6 +113,7 @@ export function cleanProcessor(options: CleanProcessorOptions) {
         textNode.value = removeAudioEmbeds(textNode.value);
         textNode.value = cleanWikiLinks(textNode.value);
         textNode.value = removeEmojis(textNode.value);
+        textNode.value = removeMarkdownFormatting(textNode.value);
       }
     });
   };
@@ -162,6 +163,16 @@ function removeAudioEmbeds(text: string): string {
     /!\[\[([^\]]+)\.(mp3|wav|ogg|m4a|flac|aac|wma)\]\]/gi,
     "",
   );
+}
+
+/**
+ * Remove leftover markdown formatting characters (* and _)
+ * that remark couldn't parse (e.g. bold/italic around CJK punctuation)
+ */
+function removeMarkdownFormatting(text: string): string {
+  return text
+    .replace(/\*{1,3}/g, "")
+    .replace(/_{1,3}/g, "");
 }
 
 /**
