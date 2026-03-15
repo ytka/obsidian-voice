@@ -1,6 +1,15 @@
 export class MarkdownView {}
 export class TFile {}
 export class App {}
+export class Modal {
+  app: any;
+  contentEl: any = { empty() {}, createEl() { return {}; }, createDiv() { return {}; } };
+  constructor(app: any) { this.app = app; }
+  open() {}
+  close() {}
+  onOpen() {}
+  onClose() {}
+}
 export class Plugin {}
 export class PluginSettingTab {}
 export class Setting {}

@@ -3,6 +3,7 @@ import { Voice } from "./VoicePlugin";
 import { TTSService } from "../service/TTSService";
 import { MobileControlBar } from "./MobileControlBar";
 import { AudioFileManager } from "./AudioFileManager";
+import { TextPreviewModal } from "./TextPreviewModal";
 import { getVoicesForProvider } from "../settings/VoiceSettings";
 
 export class IconEventHandler {
@@ -206,6 +207,15 @@ export class IconEventHandler {
       () => this.ttsService.fastForwardAudio(),
       false,
       "Fast-forward 3 seconds",
+    );
+
+    // Text Preview
+    this.createStatusBarIcon(
+      "file-text",
+      "text-preview",
+      () => this.handleTextPreview(),
+      false,
+      "Preview TTS text",
     );
 
     // Download MP3
@@ -617,6 +627,40 @@ export class IconEventHandler {
     } catch (error) {
       console.error("Error downloading audio:", error);
       new Notice(`Failed to download audio: ${error.message}`);
+    }
+  }
+
+  private async handleTextPreview(): Promise<void> {
+    try {
+      const { MarkdownHelper } = await import("./MarkdownHelper");
+      const helper = new MarkdownHelper(this.plugin.app);
+      const rawText = await helper.getMarkdownView();
+
+      const { MarkdownToSSMLProcessor } = await import(
+        "../processors/MarkdownToSSMLProcessor"
+      );
+      const processor = new MarkdownToSSMLProcessor({
+        voiceType: "neural",
+        spellOutAcronyms: this.voice.settings.spellOutAcronyms,
+      });
+      const result = await processor.process(rawText);
+
+      // Strip SSML tags to show plain text that will be spoken
+      const plainText = result.ssml
+        .replace(/<speak>|<\/speak>/g, "")
+        .replace(/<break[^>]*\/>/g, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .trim();
+
+      new TextPreviewModal(this.plugin.app, plainText).open();
+    } catch (error) {
+      console.error("Error generating text preview:", error);
+      new Notice(`Failed to generate preview: ${error.message}`);
     }
   }
 }
