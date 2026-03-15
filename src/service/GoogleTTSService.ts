@@ -7,6 +7,9 @@ export class GoogleTTSService extends BaseTTSService {
   constructor(apiKey: string, voice: string, speed?: number) {
     super(voice, speed);
     this.apiKey = apiKey;
+    // Google TTS limit is 5000 bytes; Japanese is ~3 bytes/char in UTF-8
+    // Use 1500 chars to stay safely under 5000 bytes with SSML markup
+    this.maxChunkSize = 1500;
   }
 
   protected async synthesize(

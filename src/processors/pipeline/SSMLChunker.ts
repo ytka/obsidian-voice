@@ -44,12 +44,33 @@ export function chunkSSML(
   }
 
   // Split at sentence/paragraph boundaries
-  const chunks = smartSplit(content, maxChunkSize);
+  const rawChunks = smartSplit(content, maxChunkSize);
 
-  return chunks.map((chunk, index) => ({
+  // Repair tags across all chunks: close unclosed tags, reopen in next chunk
+  const repairedChunks: string[] = [];
+  let openTags: { name: string; full: string }[] = [];
+
+  for (const chunk of rawChunks) {
+    // Prepend reopening tags from previous chunk
+    const prefix = openTags.map((t) => t.full).join("");
+    const withPrefix = prefix + chunk;
+
+    // Parse tag balance for this chunk
+    openTags = getOpenTagStack(withPrefix);
+
+    // Close any unclosed tags
+    let repaired = withPrefix;
+    for (let i = openTags.length - 1; i >= 0; i--) {
+      repaired += `</${openTags[i].name}>`;
+    }
+
+    repairedChunks.push(repaired);
+  }
+
+  return repairedChunks.map((chunk, index) => ({
     ssml: `<speak>${chunk}</speak>`,
     index,
-    total: chunks.length,
+    total: repairedChunks.length,
   }));
 }
 
@@ -111,11 +132,17 @@ function splitLargeSegment(segment: string, maxSize: number): string[] {
     }
 
     const chunk = remaining.substring(0, splitPoint);
-    const repaired = repairUnclosedTags(chunk);
+    const openTags = getOpenTagStack(chunk);
+
+    // Close unclosed tags
+    let repaired = chunk;
+    for (let i = openTags.length - 1; i >= 0; i--) {
+      repaired += `</${openTags[i].name}>`;
+    }
     chunks.push(repaired);
 
-    // Prepend any tags that were open at the split point
-    const reopened = getReopeningTags(chunk);
+    // Prepend reopening tags to remaining
+    const reopened = openTags.map((t) => t.full).join("");
     remaining = reopened + remaining.substring(splitPoint);
   }
 
@@ -146,68 +173,37 @@ function findSafeForcePoint(text: string, maxPos: number): number {
 }
 
 /**
- * Close any unclosed tags in a chunk
+ * Parse a chunk and return the stack of tags that are still open at the end.
+ * Handles self-closing tags, and pops matching close tags from the stack.
  */
-function repairUnclosedTags(chunk: string): string {
-  const openTagStack: string[] = [];
-  const tagRegex = /<\/?([a-zA-Z][a-zA-Z0-9]*)[^>]*\/?>/g;
+function getOpenTagStack(chunk: string): { name: string; full: string }[] {
+  const stack: { name: string; full: string }[] = [];
+  // Match opening tags, closing tags, and self-closing tags
+  const tagRegex = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)([^>]*?)(\/?)>/g;
   let match;
 
   while ((match = tagRegex.exec(chunk)) !== null) {
-    const fullMatch = match[0];
-    const tagName = match[1];
+    const isClosing = match[1] === "/";
+    const tagName = match[2];
+    const isSelfClosing = match[4] === "/";
 
     if (tagName === "speak") continue;
+    if (isSelfClosing) continue;
 
-    if (fullMatch.endsWith("/>")) {
-      // Self-closing tag, skip
-      continue;
-    } else if (fullMatch.startsWith("</")) {
-      // Closing tag
-      if (openTagStack.length > 0 && openTagStack[openTagStack.length - 1] === tagName) {
-        openTagStack.pop();
+    if (isClosing) {
+      // Find the last matching open tag and pop it
+      for (let i = stack.length - 1; i >= 0; i--) {
+        if (stack[i].name === tagName) {
+          stack.splice(i, 1);
+          break;
+        }
       }
     } else {
-      // Opening tag
-      openTagStack.push(tagName);
+      stack.push({ name: tagName, full: match[0] });
     }
   }
 
-  // Close unclosed tags in reverse order
-  let result = chunk;
-  for (let i = openTagStack.length - 1; i >= 0; i--) {
-    result += `</${openTagStack[i]}>`;
-  }
-  return result;
-}
-
-/**
- * Get opening tags that need to be reopened at the start of the next chunk
- */
-function getReopeningTags(chunk: string): string {
-  const openTagStack: { name: string; full: string }[] = [];
-  const tagRegex = /<\/?([a-zA-Z][a-zA-Z0-9]*)([^>]*)\/?>/g;
-  let match;
-
-  while ((match = tagRegex.exec(chunk)) !== null) {
-    const fullMatch = match[0];
-    const tagName = match[1];
-
-    if (tagName === "speak") continue;
-
-    if (fullMatch.endsWith("/>")) {
-      continue;
-    } else if (fullMatch.startsWith("</")) {
-      if (openTagStack.length > 0 && openTagStack[openTagStack.length - 1].name === tagName) {
-        openTagStack.pop();
-      }
-    } else {
-      // Store the full opening tag to reopen with same attributes
-      openTagStack.push({ name: tagName, full: fullMatch });
-    }
-  }
-
-  return openTagStack.map((t) => t.full).join("");
+  return stack;
 }
 
 /**
@@ -296,17 +292,11 @@ export function validateChunks(chunks: SSMLChunk[]): {
       );
     }
 
-    // Basic tag balance check
-    // Count opening tags (excluding self-closing)
-    const allOpenTags = chunk.ssml.match(/<[^/][^>]*>/g) || [];
-    const selfClosing = (chunk.ssml.match(/<[^>]+\/>/g) || []).length;
-    const openTags = allOpenTags.length - selfClosing;
-    const closeTags = (chunk.ssml.match(/<\/[^>]+>/g) || []).length;
-
-    // Opening tags should match closing tags
-    if (openTags !== closeTags) {
+    // Tag balance check using the same parser as repair logic
+    const unclosed = getOpenTagStack(chunk.ssml);
+    if (unclosed.length > 0) {
       errors.push(
-        `Chunk ${chunk.index} has unbalanced tags (${openTags} open, ${closeTags} close)`,
+        `Chunk ${chunk.index} has ${unclosed.length} unclosed tag(s): ${unclosed.map((t) => t.name).join(", ")}`,
       );
     }
   }

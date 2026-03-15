@@ -15,7 +15,7 @@ export class MarkdownHelper {
     if (activeView) {
       const title = this.getActiveFileTitle();
       content = activeView.editor.getValue();
-      return title ? `# ${title}\n\n${content}` : content;
+      return title ? this.prependTitle(title, content) : content;
     }
 
     // If no MarkdownView is active, try to get the active file
@@ -24,7 +24,7 @@ export class MarkdownHelper {
       try {
         const title = activeFile.basename;
         content = await this.app.vault.cachedRead(activeFile);
-        return title ? `# ${title}\n\n${content}` : content;
+        return title ? this.prependTitle(title, content) : content;
       } catch (error) {
         console.error("Error reading active file:", error);
         return "Error reading the active file.";
@@ -43,5 +43,15 @@ export class MarkdownHelper {
   private getActiveFileTitle(): string | null {
     const activeFile = this.app.workspace.getActiveFile();
     return activeFile?.basename || null;
+  }
+
+  private prependTitle(title: string, content: string): string {
+    // Insert title after frontmatter to avoid breaking its parsing
+    const frontmatterMatch = content.match(/^---\n[\s\S]*?\n---\n/);
+    if (frontmatterMatch) {
+      const afterFrontmatter = content.substring(frontmatterMatch[0].length);
+      return `${frontmatterMatch[0]}# ${title}\n\n${afterFrontmatter}`;
+    }
+    return `# ${title}\n\n${content}`;
   }
 }

@@ -200,6 +200,62 @@ describe("Unit Tests - SSML Chunking", () => {
   });
 });
 
+describe("Unit Tests - SSML Chunking Tag Repair", () => {
+  test("should repair tags when splitting across prosody boundaries", () => {
+    // Simulate content where break tags split inside prosody
+    const content =
+      '<prosody volume="loud">Bold text one.</prosody><break time="500ms"/>' +
+      '<prosody volume="loud">Bold text two.</prosody><break time="500ms"/>' .repeat(30);
+    const ssml = `<speak>${content}</speak>`;
+    const chunks = chunkSSML(ssml, 1500);
+
+    const validation = validateChunks(chunks);
+    expect(validation.isValid).toBe(true);
+    expect(validation.errors).toHaveLength(0);
+  });
+
+  test("should handle nested prosody tags across chunks", () => {
+    const content =
+      '<prosody rate="90%"><prosody volume="loud">Nested content here.</prosody> More text.</prosody><break time="500ms"/>'.repeat(20);
+    const ssml = `<speak>${content}</speak>`;
+    const chunks = chunkSSML(ssml, 1500);
+
+    const validation = validateChunks(chunks);
+    expect(validation.isValid).toBe(true);
+    expect(validation.errors).toHaveLength(0);
+  });
+
+  test("should handle small chunk sizes for CJK content", () => {
+    // Simulate Japanese content with Google TTS chunk size
+    const content =
+      '<prosody volume="loud">日本語のテスト文章です。</prosody><break time="500ms"/>'.repeat(30);
+    const ssml = `<speak>${content}</speak>`;
+    const chunks = chunkSSML(ssml, 1500);
+
+    expect(chunks.length).toBeGreaterThan(1);
+    const validation = validateChunks(chunks);
+    expect(validation.isValid).toBe(true);
+    expect(validation.errors).toHaveLength(0);
+  });
+
+  test("should validate chunks have balanced tags after repair", () => {
+    // Large mixed content that forces splits mid-tag
+    const segments = [];
+    for (let i = 0; i < 50; i++) {
+      segments.push(`<prosody volume="loud">Sentence ${i} with emphasis.</prosody>`);
+      segments.push(`<break time="300ms"/>`);
+      segments.push(`Plain text sentence ${i}.`);
+      segments.push(`<break time="500ms"/>`);
+    }
+    const ssml = `<speak>${segments.join("")}</speak>`;
+    const chunks = chunkSSML(ssml, 1500);
+
+    const validation = validateChunks(chunks);
+    expect(validation.isValid).toBe(true);
+    expect(validation.errors).toHaveLength(0);
+  });
+});
+
 describe("Unit Tests - Validation Helpers", () => {
   describe("SSML Validation", () => {
     test("should validate correct SSML", () => {

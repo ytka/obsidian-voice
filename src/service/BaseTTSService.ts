@@ -13,6 +13,7 @@ export abstract class BaseTTSService implements TTSService {
   protected lastGeneratedAudioFilePath: string | null = null;
   protected currentRequestId: string | null = null;
   protected currentContent: string = "No document selected.";
+  protected maxChunkSize: number = 2500;
 
   constructor(voice: string, speed?: number) {
     this.speed = speed || 1.0;
@@ -45,8 +46,8 @@ export abstract class BaseTTSService implements TTSService {
         "../processors/pipeline/SSMLChunker"
       );
 
-      if (ssml.length > 2500) {
-        const chunks = chunkSSML(ssml, 2500);
+      if (ssml.length > this.maxChunkSize) {
+        const chunks = chunkSSML(ssml, this.maxChunkSize);
         const validation = validateChunks(chunks);
         if (!validation.isValid) {
           console.error("Chunk validation errors:", validation.errors);
@@ -91,11 +92,16 @@ export abstract class BaseTTSService implements TTSService {
       const chunkProgress = 1 / chunk.total;
       this.reportProgress(baseProgress + chunkProgress * 0.9, 1);
 
-      const blob = await this.synthesize(
-        chunk.ssml,
-        this.abortController?.signal,
-      );
-      audioBlobs.push(blob);
+      try {
+        const blob = await this.synthesize(
+          chunk.ssml,
+          this.abortController?.signal,
+        );
+        audioBlobs.push(blob);
+      } catch (error) {
+        console.error(`[Voice] Chunk ${chunk.index}/${chunk.total} failed. SSML:`, chunk.ssml);
+        throw error;
+      }
     }
 
     const finalBlob = new Blob(audioBlobs, { type: "audio/mpeg" });
