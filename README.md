@@ -1,5 +1,21 @@
 # Obsidian Voice Plugin 🔊
 
+> **This is a fork of [chrisurf/obsidian-voice](https://github.com/chrisurf/obsidian-voice)** with the following changes:
+
+## Changes from upstream
+
+- **Google Cloud TTS support**: Added as an alternative TTS provider with provider switching in settings (AWS Polly / Google Cloud TTS)
+- **TTS service architecture refactor**: Extracted `BaseTTSService` base class from `AwsPollyService` for shared playback, caching, and state management logic
+- **Text preview button**: Added status bar button to preview the processed text before or after playback
+- **Note title read-aloud**: Prepends the note title (filename) as a heading before reading content
+- **SSML chunker fixes**: Fixed tag splitting across chunk boundaries, added tag repair/reopening logic, added Japanese punctuation support for split points
+- **Markdown cleanup**: Strip leftover `**` and `_` formatting that remark parser can't handle (CJK punctuation edge case)
+- **Frontmatter fix**: Title is now inserted after frontmatter to prevent parsing issues
+- **Playback improvements**: Resume from pause without re-synthesis, replay from cache after playback ends, stop button clears cache
+- **Always read full document**: Ignore text selection to prevent partial read-aloud
+
+---
+
 Turn every note into a mobile-friendly, audiobook-like experience. The Obsidian Voice Plugin adds natural speech, intuitive audio controls, and secure AWS Polly integration so you can listen to your workspace anywhere.
 
 ## Table of Contents
