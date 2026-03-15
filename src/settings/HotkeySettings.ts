@@ -1,13 +1,13 @@
-import { AwsPollyService } from "../service/AwsPollyService";
+import { TTSService } from "../service/TTSService";
 import { Voice } from "../utils/VoicePlugin";
 
 export class HotkeySettings {
   private voice: Voice;
-  private pollyService: AwsPollyService;
+  private ttsService: TTSService;
 
-  constructor(voice: Voice, pollyService: AwsPollyService) {
+  constructor(voice: Voice, ttsService: TTSService) {
     this.voice = voice;
-    this.pollyService = pollyService;
+    this.ttsService = ttsService;
   }
 
   public initHotkeys(): void {
@@ -20,25 +20,25 @@ export class HotkeySettings {
     this.voice.addCommand({
       id: "pause-audio",
       name: "Pause reading the current document.",
-      callback: () => this.pollyService.pauseAudio(),
+      callback: () => this.ttsService.pauseAudio(),
     });
 
     this.voice.addCommand({
       id: "stop-audio",
       name: "Stop reading the current document.",
-      callback: () => this.pollyService.stopAudio(),
+      callback: () => this.ttsService.stopAudio(),
     });
 
     this.voice.addCommand({
       id: "rewind-audio",
       name: "Rewind by few seconds reading the current document.",
-      callback: () => this.pollyService.rewindAudio(),
+      callback: () => this.ttsService.rewindAudio(),
     });
 
     this.voice.addCommand({
       id: "fast-forward-audio",
       name: "Fast-Forward by few seconds reading the current document.",
-      callback: () => this.pollyService.fastForwardAudio(),
+      callback: () => this.ttsService.fastForwardAudio(),
     });
 
     this.voice.addCommand({

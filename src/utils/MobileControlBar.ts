@@ -1,13 +1,13 @@
 import { App, setIcon, Notice, Menu } from "obsidian";
 import { Voice } from "./VoicePlugin";
-import { AwsPollyService } from "../service/AwsPollyService";
+import { TTSService } from "../service/TTSService";
 import { AudioFileManager } from "./AudioFileManager";
-import { VOICES } from "../settings/VoiceSettings";
+import { getVoicesForProvider } from "../settings/VoiceSettings";
 
 export class MobileControlBar {
   private app: App;
   private plugin: Voice;
-  private pollyService: AwsPollyService;
+  private ttsService: TTSService;
   private containerEl: HTMLElement | null = null;
   private isVisible: boolean = false;
   private playPauseIconEl: HTMLElement | null = null;
@@ -18,43 +18,39 @@ export class MobileControlBar {
   private isErrorState: boolean = false;
   private audioFileManager: AudioFileManager;
 
-  constructor(app: App, plugin: Voice, pollyService: AwsPollyService) {
+  constructor(app: App, plugin: Voice, ttsService: TTSService) {
     this.app = app;
     this.plugin = plugin;
-    this.pollyService = pollyService;
+    this.ttsService = ttsService;
     this.audioFileManager = new AudioFileManager(app);
     this.createOverlayBar();
     this.initializeEventListeners();
 
-    // Listen for file changes to update download button visibility
     this.app.workspace.on("active-leaf-change", () => {
       this.updateDownloadButtonVisibility();
     });
   }
 
+  public updateService(ttsService: TTSService): void {
+    this.ttsService = ttsService;
+    this.initializeEventListeners();
+  }
+
   private createOverlayBar(): void {
-    // Create overlay container
     this.containerEl = document.body.createDiv({
       cls: "voice-mobile-overlay",
     });
 
-    // Add control buttons
     this.addControlButtons();
-
-    // Initially hidden
     this.hide();
-
-    // Add styles
     this.addMobileOverlayStyles();
   }
 
   private addControlButtons(): void {
     if (!this.containerEl) return;
 
-    // Progress bar (at the top, initially hidden)
     this.createProgressBar();
 
-    // Create controls wrapper
     const controlsWrapper = this.containerEl.createDiv({
       cls: "voice-mobile-controls",
     });
@@ -66,16 +62,17 @@ export class MobileControlBar {
       "Change Voice",
       (event: MouseEvent) => {
         const menu = new Menu();
+        const voices = getVoicesForProvider(this.plugin.settings.TTS_PROVIDER);
 
-        VOICES.forEach((voice) => {
+        voices.forEach((voice) => {
           menu.addItem((item) =>
             item
               .setTitle(voice.label)
-              .setChecked(voice.id === this.pollyService.getVoice())
+              .setChecked(voice.id === this.ttsService.getVoice())
               .onClick(async () => {
                 this.plugin.settings.VOICE = voice.id;
                 await this.plugin.saveSettings();
-                this.pollyService.setVoice(voice.id);
+                this.ttsService.setVoice(voice.id);
                 this.plugin.iconEventHandler.updateVoiceDisplay();
               }),
           );
@@ -85,32 +82,30 @@ export class MobileControlBar {
       },
     );
 
-    // Download MP3 button (initially hidden)
+    // Download MP3
     this.downloadIconEl = this.createControlButton(
       controlsWrapper,
       "download",
       "Download Audio",
       () => this.handleDownloadAudio(),
     );
-    this.downloadIconEl.style.display = "none"; // Initially hidden
+    this.downloadIconEl.style.display = "none";
 
-    // Rewind button
+    // Rewind
     this.createControlButton(controlsWrapper, "rewind", "Rewind", () =>
-      this.pollyService.rewindAudio(),
+      this.ttsService.rewindAudio(),
     );
 
-    // Stop button
+    // Stop
     this.createControlButton(controlsWrapper, "square", "Stop", () => {
-      if (this.pollyService.isOperationInProgress()) {
-        this.pollyService.cancelOperation();
+      if (this.ttsService.isOperationInProgress()) {
+        this.ttsService.cancelOperation();
         this.resetToPlayState();
         this.hideProgressBar();
-        // Hide overlay after stop
         setTimeout(() => this.hide(), 3000);
-        return; // EXIT - don't do anything else
+        return;
       }
-      this.pollyService.stopAudio();
-      // Hide overlay after stop
+      this.ttsService.stopAudio();
       setTimeout(() => this.hide(), 3000);
     });
 
@@ -119,36 +114,33 @@ export class MobileControlBar {
       cls: "voice-mobile-speed-group",
     });
 
-    // Slower button
     this.createControlButton(speedGroup, "minus", "Slower", () =>
       this.decreaseSpeed(),
     );
 
-    // Speed display
     this.speedDisplayEl = speedGroup.createDiv({
       cls: "voice-mobile-speed-display",
     });
     this.updateSpeedDisplay();
 
-    // Faster button
     this.createControlButton(speedGroup, "plus", "Faster", () =>
       this.increaseSpeed(),
     );
 
-    // Play/Pause button (emphasized)
+    // Play/Pause
     this.playPauseIconEl = this.createControlButton(
       controlsWrapper,
       "play",
       "Play/Pause",
       () => {
-        if (this.pollyService.isOperationInProgress()) {
-          this.pollyService.cancelOperation();
+        if (this.ttsService.isOperationInProgress()) {
+          this.ttsService.cancelOperation();
           this.resetToPlayState();
           this.hideProgressBar();
-          return; // CRITICAL: EXIT - don't start new request
+          return;
         }
 
-        if (!this.pollyService.isPlaying()) {
+        if (!this.ttsService.isPlaying()) {
           this.showLoadingState();
         }
         this.plugin.speakText();
@@ -156,12 +148,12 @@ export class MobileControlBar {
     );
     this.playPauseIconEl?.addClass("voice-mobile-primary-btn");
 
-    // Fast-forward button
+    // Fast-forward
     this.createControlButton(
       controlsWrapper,
       "fast-forward",
       "Fast Forward",
-      () => this.pollyService.fastForwardAudio(),
+      () => this.ttsService.fastForwardAudio(),
     );
   }
 
@@ -193,23 +185,22 @@ export class MobileControlBar {
       cls: "voice-mobile-progress-bar",
     });
 
-    // Initially hidden
     this.hideProgressBar();
   }
 
   private updateSpeedDisplay(): void {
     if (this.speedDisplayEl) {
-      const currentSpeed = this.pollyService.getSpeed();
+      const currentSpeed = this.ttsService.getSpeed();
       this.speedDisplayEl.textContent = `${currentSpeed.toFixed(1)}x`;
     }
   }
 
   private decreaseSpeed(): void {
-    const currentSpeed = this.pollyService.getSpeed();
+    const currentSpeed = this.ttsService.getSpeed();
     const newSpeed = Math.max(0.5, Math.round((currentSpeed - 0.1) * 10) / 10);
 
     if (newSpeed !== currentSpeed) {
-      this.pollyService.setSpeed(newSpeed);
+      this.ttsService.setSpeed(newSpeed);
       this.plugin.settings.SPEED = newSpeed;
       this.plugin.saveSettings();
       this.updateSpeedDisplay();
@@ -217,11 +208,11 @@ export class MobileControlBar {
   }
 
   private increaseSpeed(): void {
-    const currentSpeed = this.pollyService.getSpeed();
+    const currentSpeed = this.ttsService.getSpeed();
     const newSpeed = Math.min(1.9, Math.round((currentSpeed + 0.1) * 10) / 10);
 
     if (newSpeed !== currentSpeed) {
-      this.pollyService.setSpeed(newSpeed);
+      this.ttsService.setSpeed(newSpeed);
       this.plugin.settings.SPEED = newSpeed;
       this.plugin.saveSettings();
       this.updateSpeedDisplay();
@@ -276,14 +267,11 @@ export class MobileControlBar {
   }
 
   private initializeEventListeners(): void {
-    const audio = this.pollyService.getAudio();
+    const audio = this.ttsService.getAudio();
     audio.addEventListener("play", () => this.onPlay());
     audio.addEventListener("pause", () => this.onPause());
     audio.addEventListener("ended", () => this.onEnded());
     audio.addEventListener("canplaythrough", () => this.onCanPlayThrough());
-
-    // Note: Progress and error callbacks are handled by IconEventHandler
-    // to avoid conflicts and ensure both desktop and mobile are updated
   }
 
   private onPlay(): void {
@@ -292,8 +280,7 @@ export class MobileControlBar {
       setIcon(this.playPauseIconEl, "pause");
     }
     this.hideProgressBar();
-    this.show(); // Keep overlay visible during playback
-    // Show download button when audio is successfully generated
+    this.show();
     this.showDownloadButton();
   }
 
@@ -304,9 +291,8 @@ export class MobileControlBar {
     }
     this.hideProgressBar();
 
-    // Auto-hide after 3 seconds when paused, but only if not playing
     setTimeout(() => {
-      if (!this.pollyService.isPlaying()) {
+      if (!this.ttsService.isPlaying()) {
         this.hide();
       }
     }, 3000);
@@ -322,7 +308,6 @@ export class MobileControlBar {
       setIcon(this.playPauseIconEl, "play");
     }
     this.hideProgressBar();
-    // Hide overlay when audio ends
     setTimeout(() => this.hide(), 3000);
   }
 
@@ -330,7 +315,6 @@ export class MobileControlBar {
     this.showErrorState();
     this.resetToPlayState();
 
-    // Auto-hide error after 3 seconds
     setTimeout(() => {
       this.hideProgressBar();
     }, 3000);
@@ -360,31 +344,21 @@ export class MobileControlBar {
   }
 
   public handleErrorFromExternal(): void {
-    // Mobile implementation focuses on visual feedback rather than error messages
     this.handleError();
   }
 
-  /**
-   * Show the download button
-   */
   private showDownloadButton(): void {
     if (this.downloadIconEl) {
       this.downloadIconEl.style.display = "";
     }
   }
 
-  /**
-   * Hide the download button
-   */
   private hideDownloadButton(): void {
     if (this.downloadIconEl) {
       this.downloadIconEl.style.display = "none";
     }
   }
 
-  /**
-   * Update download button visibility based on cached audio
-   */
   public updateDownloadButtonVisibility(): void {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile) {
@@ -392,8 +366,7 @@ export class MobileControlBar {
       return;
     }
 
-    // Check if cached audio exists for this file
-    const audioBlob = this.pollyService.getLastGeneratedAudio(activeFile.path);
+    const audioBlob = this.ttsService.getLastGeneratedAudio(activeFile.path);
     if (audioBlob) {
       this.showDownloadButton();
     } else {
@@ -401,20 +374,15 @@ export class MobileControlBar {
     }
   }
 
-  /**
-   * Handle download audio button click
-   */
   private async handleDownloadAudio(): Promise<void> {
     try {
-      // Get current file path for validation
       const activeFile = this.app.workspace.getActiveFile();
       if (!activeFile) {
         new Notice("No active file found");
         return;
       }
 
-      // Get the cached audio blob from Polly service with file path validation
-      const audioBlob = this.pollyService.getLastGeneratedAudio(
+      const audioBlob = this.ttsService.getLastGeneratedAudio(
         activeFile.path,
       );
 
@@ -425,7 +393,6 @@ export class MobileControlBar {
         return;
       }
 
-      // Use AudioFileManager to save and embed
       await this.audioFileManager.downloadAndEmbed(audioBlob);
     } catch (error) {
       console.error("Error downloading audio:", error);
@@ -434,7 +401,6 @@ export class MobileControlBar {
   }
 
   private addMobileOverlayStyles(): void {
-    // Check if styles already added
     if (document.getElementById("voice-mobile-overlay-styles")) return;
 
     const style = document.createElement("style");
@@ -459,14 +425,14 @@ export class MobileControlBar {
         max-width: 100vw;
         transform: translateY(2px);
       }
-      
+
       .voice-mobile-controls {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 6px;
       }
-      
+
       .voice-mobile-speed-group {
         display: flex;
         align-items: center;
@@ -475,7 +441,7 @@ export class MobileControlBar {
         border: none !important;
         padding: 1px;
       }
-      
+
       .voice-mobile-control-btn {
         background: var(--background-primary) !important;
         background-color: var(--background-primary) !important;
@@ -498,7 +464,7 @@ export class MobileControlBar {
         fill: currentColor;
         stroke: currentColor;
       }
-      
+
       .voice-mobile-control-btn:hover {
         background: var(--background-modifier-hover) !important;
         color: var(--interactive-accent);
@@ -511,7 +477,7 @@ export class MobileControlBar {
         fill: currentColor;
         stroke: currentColor;
       }
-      
+
       .voice-mobile-control-btn:active {
         background: var(--background-modifier-active);
         color: var(--interactive-accent);
@@ -524,7 +490,7 @@ export class MobileControlBar {
         fill: currentColor;
         stroke: currentColor;
       }
-      
+
       .voice-mobile-primary-btn {
         background: var(--interactive-accent);
         color: var(--text-on-accent);
@@ -534,18 +500,18 @@ export class MobileControlBar {
         opacity: 1;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24);
       }
-      
+
       .voice-mobile-primary-btn:hover {
         background: var(--interactive-accent-hover);
         transform: scale(1.08);
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.16), 0 2px 4px rgba(0, 0, 0, 0.32);
       }
-      
+
       .voice-mobile-primary-btn:active {
         background: var(--interactive-accent);
         transform: scale(0.95);
       }
-      
+
       .voice-mobile-speed-display {
         background: transparent;
         color: var(--interactive-accent);
@@ -559,7 +525,7 @@ export class MobileControlBar {
         line-height: 1.2;
         opacity: 0.9;
       }
-      
+
       .voice-mobile-progress-container {
         display: none;
         width: 100%;
@@ -570,7 +536,7 @@ export class MobileControlBar {
         position: relative;
         margin-bottom: 4px;
       }
-      
+
       .voice-mobile-progress-bar {
         height: 100%;
         width: 0%;
@@ -578,60 +544,57 @@ export class MobileControlBar {
         border-radius: var(--radius-xs);
         transition: width 0.3s ease;
       }
-      
+
       .voice-mobile-progress-container.visible {
         display: block;
       }
-      
+
       .voice-mobile-progress-container.error {
         background: var(--color-red);
       }
-      
+
       .voice-mobile-progress-container.error .voice-mobile-progress-bar {
         background: var(--text-error);
         width: 100% !important;
       }
-      
-      /* Responsive adjustments for smaller screens */
+
       @media (max-width: 480px) {
         .voice-mobile-overlay {
           padding: 6px 8px;
           margin: 0 2px;
           border-radius: var(--radius-s) var(--radius-s) 0 0;
         }
-        
+
         .voice-mobile-controls {
           gap: 4px;
         }
-        
+
         .voice-mobile-control-btn {
           min-width: 32px;
           min-height: 32px;
           padding: 4px;
         }
-        
+
         .voice-mobile-primary-btn {
           min-width: 38px;
           min-height: 38px;
         }
-        
+
         .voice-mobile-speed-display {
           padding: 3px 6px;
           font-size: 10px;
           min-width: 32px;
         }
-        
+
         .voice-mobile-speed-group {
           gap: 1px;
         }
       }
-      
-      /* Dark theme adjustments */
+
       .theme-dark .voice-mobile-overlay {
         box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.2), 0 -2px 8px rgba(0, 0, 0, 0.15);
       }
-      
-      /* Ensure the overlay doesn't interfere with system navigation */
+
       @supports (bottom: env(safe-area-inset-bottom)) {
         .voice-mobile-overlay {
           bottom: max(80px, calc(env(safe-area-inset-bottom) + 60px));
@@ -642,20 +605,17 @@ export class MobileControlBar {
   }
 
   destroy(): void {
-    // Remove event listeners
-    const audio = this.pollyService.getAudio();
+    const audio = this.ttsService.getAudio();
     audio.removeEventListener("play", () => this.onPlay());
     audio.removeEventListener("pause", () => this.onPause());
     audio.removeEventListener("ended", () => this.onEnded());
     audio.removeEventListener("canplaythrough", () => this.onCanPlayThrough());
 
-    // Remove overlay element
     if (this.containerEl) {
       this.containerEl.remove();
       this.containerEl = null;
     }
 
-    // Remove styles
     const styleEl = document.getElementById("voice-mobile-overlay-styles");
     if (styleEl) {
       styleEl.remove();

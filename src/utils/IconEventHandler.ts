@@ -1,12 +1,12 @@
 import { Plugin, setIcon, Notice, Menu } from "obsidian";
 import { Voice } from "./VoicePlugin";
-import { AwsPollyService } from "../service/AwsPollyService";
+import { TTSService } from "../service/TTSService";
 import { MobileControlBar } from "./MobileControlBar";
 import { AudioFileManager } from "./AudioFileManager";
-import { VOICES } from "../settings/VoiceSettings";
+import { getVoicesForProvider } from "../settings/VoiceSettings";
 
 export class IconEventHandler {
-  private pollyService: AwsPollyService;
+  private ttsService: TTSService;
   private plugin: Plugin;
   private voice: Voice;
   private statusBarItem: HTMLElement;
@@ -24,10 +24,10 @@ export class IconEventHandler {
   private onPauseListener = () => this.onPause();
   private onCanPlayThroughListener = () => this.onCanPlayThrough();
 
-  constructor(plugin: Plugin, voice: Voice, pollyService: AwsPollyService) {
+  constructor(plugin: Plugin, voice: Voice, ttsService: TTSService) {
     this.plugin = plugin;
     this.voice = voice;
-    this.pollyService = pollyService;
+    this.ttsService = ttsService;
     this.audioFileManager = new AudioFileManager(plugin.app);
 
     this.addSpeedControlStyles();
@@ -40,23 +40,21 @@ export class IconEventHandler {
       this.mobileControlBar = new MobileControlBar(
         this.plugin.app,
         this.voice,
-        this.pollyService,
+        this.ttsService,
       );
     }
 
-    // Set up progress callback for AWS Polly loading
-    this.pollyService.setProgressCallback((progress: number) => {
+    // Set up progress callback for TTS loading
+    this.ttsService.setProgressCallback((progress: number) => {
       this.updateProgressBar(progress);
-      // Also update mobile progress bar if on mobile
       if (this.mobileControlBar) {
         this.mobileControlBar.updateProgressFromExternal(progress);
       }
     });
 
-    // Set up error callback for AWS Polly errors
-    this.pollyService.setErrorCallback((error: string) => {
+    // Set up error callback for TTS errors
+    this.ttsService.setErrorCallback((error: string) => {
       this.handleError(error);
-      // Also handle mobile errors if on mobile
       if (this.mobileControlBar) {
         this.mobileControlBar.handleErrorFromExternal();
       }
@@ -68,6 +66,39 @@ export class IconEventHandler {
         this.updateDownloadButtonVisibility();
       }),
     );
+  }
+
+  public updateService(ttsService: TTSService): void {
+    // Remove old event listeners
+    const oldAudio = this.ttsService.getAudio();
+    oldAudio.removeEventListener("play", this.onPlayListener);
+    oldAudio.removeEventListener("pause", this.onPauseListener);
+    oldAudio.removeEventListener("canplaythrough", this.onCanPlayThroughListener);
+
+    this.ttsService = ttsService;
+
+    // Set up callbacks on new service
+    this.ttsService.setProgressCallback((progress: number) => {
+      this.updateProgressBar(progress);
+      if (this.mobileControlBar) {
+        this.mobileControlBar.updateProgressFromExternal(progress);
+      }
+    });
+
+    this.ttsService.setErrorCallback((error: string) => {
+      this.handleError(error);
+      if (this.mobileControlBar) {
+        this.mobileControlBar.handleErrorFromExternal();
+      }
+    });
+
+    // Attach new event listeners
+    this.initializeEventListeners();
+
+    // Update mobile control bar if present
+    if (this.mobileControlBar) {
+      this.mobileControlBar.updateService(this.ttsService);
+    }
   }
 
   private createVoiceSwitcher(): void {
@@ -85,16 +116,17 @@ export class IconEventHandler {
 
     this.voiceDisplayEl.addEventListener("click", (event) => {
       const menu = new Menu();
+      const voices = getVoicesForProvider(this.voice.settings.TTS_PROVIDER);
 
-      VOICES.forEach((voice) => {
+      voices.forEach((voice) => {
         menu.addItem((item) =>
           item
             .setTitle(voice.label)
-            .setChecked(voice.id === this.pollyService.getVoice())
+            .setChecked(voice.id === this.ttsService.getVoice())
             .onClick(async () => {
               this.voice.settings.VOICE = voice.id;
               await this.voice.saveSettings();
-              this.pollyService.setVoice(voice.id);
+              this.ttsService.setVoice(voice.id);
               this.updateVoiceDisplay();
             }),
         );
@@ -106,29 +138,22 @@ export class IconEventHandler {
 
   public updateVoiceDisplay(): void {
     if (this.voiceDisplayEl) {
-      this.voiceDisplayEl.setText(this.pollyService.getVoice() || "Stephen");
+      this.voiceDisplayEl.setText(this.ttsService.getVoice() || "Stephen");
     }
   }
 
   private initStatusBarItem(): void {
     this.statusBarItem = this.plugin.addStatusBarItem();
 
-    // Add separator before voice controls to separate from other plugins
     this.addVoiceControlsSeparator();
-
-    // Voice Switcher
     this.createVoiceSwitcher();
-
-    // Progress bar (initially hidden)
     this.createProgressBar();
-
-    // Order: rewind, stop, slower, current speed, faster, play, fast-forward
 
     // Rewind
     this.createStatusBarIcon(
       "rewind",
       "rewind",
-      () => this.pollyService.rewindAudio(),
+      () => this.ttsService.rewindAudio(),
       false,
       "Rewind 3 seconds",
     );
@@ -138,21 +163,18 @@ export class IconEventHandler {
       "square",
       "stop",
       () => {
-        // If operation is in progress, cancel it
-        if (this.pollyService.isOperationInProgress()) {
-          this.pollyService.cancelOperation();
+        if (this.ttsService.isOperationInProgress()) {
+          this.ttsService.cancelOperation();
           this.resetIconsToPlayState();
           this.hideProgressBar();
-          return; // EXIT - don't do anything else
+          return;
         }
-        // Otherwise just stop audio playback
-        this.pollyService.stopAudio();
+        this.ttsService.stopAudio();
       },
       false,
       "Stop audio",
     );
 
-    // Speed controls group
     this.addSpeedControls();
 
     // Play/Pause
@@ -160,15 +182,14 @@ export class IconEventHandler {
       "play",
       "play",
       () => {
-        // If operation is in progress, cancel it
-        if (this.pollyService.isOperationInProgress()) {
-          this.pollyService.cancelOperation();
+        if (this.ttsService.isOperationInProgress()) {
+          this.ttsService.cancelOperation();
           this.resetIconsToPlayState();
           this.hideProgressBar();
-          return; // CRITICAL: EXIT - don't start new request
+          return;
         }
 
-        if (!this.pollyService.isPlaying()) {
+        if (!this.ttsService.isPlaying()) {
           this.playPauseIconEl.addClass("rotating-icon");
           setIcon(this.playPauseIconEl, "refresh-ccw");
         }
@@ -182,12 +203,12 @@ export class IconEventHandler {
     this.createStatusBarIcon(
       "fast-forward",
       "fast-forward",
-      () => this.pollyService.fastForwardAudio(),
+      () => this.ttsService.fastForwardAudio(),
       false,
       "Fast-forward 3 seconds",
     );
 
-    // Download MP3 (initially hidden)
+    // Download MP3
     this.downloadIconEl = this.createStatusBarIcon(
       "download",
       "download-audio",
@@ -195,12 +216,10 @@ export class IconEventHandler {
       false,
       "Download audio as MP3",
     );
-    this.downloadIconEl.style.display = "none"; // Initially hidden
+    this.downloadIconEl.style.display = "none";
 
-    // Add separator after all voice controls to separate from other plugins
     this.addVoiceControlsSeparator();
 
-    // Set initial speed display
     setTimeout(() => {
       this.updateSpeedDisplay();
     }, 100);
@@ -220,8 +239,6 @@ export class IconEventHandler {
     setIcon(iconEl, icon);
     iconEl.addEventListener("click", onClick);
 
-    // Use native browser tooltip (title) - it can escape container boundaries
-    // Unlike Obsidian's tooltips which get clipped by status bar overflow
     if (tooltip) {
       iconEl.title = tooltip;
     }
@@ -238,19 +255,17 @@ export class IconEventHandler {
       "play-circle",
       "Voice read text",
       () => {
-        // If operation is in progress, cancel it
-        if (this.pollyService.isOperationInProgress()) {
-          this.pollyService.cancelOperation();
+        if (this.ttsService.isOperationInProgress()) {
+          this.ttsService.cancelOperation();
           this.resetIconsToPlayState();
           this.hideProgressBar();
           if (this.mobileControlBar) {
             this.mobileControlBar.hide();
           }
-          return; // CRITICAL: EXIT - don't start new request
+          return;
         }
 
-        // Only trigger loading state if not already playing
-        if (!this.pollyService.isPlaying()) {
+        if (!this.ttsService.isPlaying()) {
           this.ribbonIconHandler();
         }
         this.voice.speakText();
@@ -260,19 +275,18 @@ export class IconEventHandler {
   }
 
   private initializeEventListeners(): void {
-    const audio = this.pollyService.getAudio();
+    const audio = this.ttsService.getAudio();
     audio.addEventListener("play", this.onPlayListener);
     audio.addEventListener("pause", this.onPauseListener);
     audio.addEventListener("canplaythrough", this.onCanPlayThroughListener);
   }
 
   public removeEventListeners(): void {
-    const audio = this.pollyService.getAudio();
+    const audio = this.ttsService.getAudio();
     audio.removeEventListener("play", this.onPlayListener);
     audio.removeEventListener("pause", this.onPauseListener);
     audio.removeEventListener("canplaythrough", this.onCanPlayThroughListener);
 
-    // Cleanup mobile control bar
     if (this.mobileControlBar) {
       this.mobileControlBar.destroy();
       this.mobileControlBar = undefined;
@@ -281,11 +295,6 @@ export class IconEventHandler {
 
   public updateSpeedDisplayFromSettings(): void {
     this.updateSpeedDisplay();
-
-    // Update mobile control bar speed display if on mobile
-    if (this.mobileControlBar) {
-      // The mobile control bar will update its own speed display through event listeners
-    }
   }
 
   ribbonIconHandler() {
@@ -294,8 +303,7 @@ export class IconEventHandler {
       return;
     }
 
-    if (!this.pollyService.isPlaying()) {
-      // Clear any previous error state
+    if (!this.ttsService.isPlaying()) {
       this.isErrorState = false;
 
       this.ribbonIconEl.addClass("rotating-icon");
@@ -303,11 +311,9 @@ export class IconEventHandler {
       setIcon(this.ribbonIconEl, "refresh-ccw");
       setIcon(this.playPauseIconEl, "refresh-ccw");
 
-      // Show mobile overlay when loading starts (mobile only)
       if (this.mobileControlBar) {
         this.mobileControlBar.showLoadingStateFromExternal();
       } else {
-        // Show progress bar for desktop
         this.showProgressBar();
         this.updateProgressBar(0);
       }
@@ -323,9 +329,7 @@ export class IconEventHandler {
       this.playPauseIconEl.removeClass("rotating-icon");
       setIcon(this.playPauseIconEl, "pause");
     }
-    // Hide progress bar when audio starts playing
     this.hideProgressBar();
-    // Show download button when audio is successfully generated
     this.showDownloadButton();
   }
 
@@ -338,12 +342,10 @@ export class IconEventHandler {
       this.playPauseIconEl.removeClass("rotating-icon");
       setIcon(this.playPauseIconEl, "play");
     }
-    // Hide progress bar when audio is paused
     this.hideProgressBar();
   }
 
   private addSpeedControls(): void {
-    // Add decrease speed button (slower)
     this.createStatusBarIcon(
       "minus",
       "speed-decrease",
@@ -352,7 +354,6 @@ export class IconEventHandler {
       "Decrease speed",
     );
 
-    // Add speed display
     this.speedDisplayEl = this.statusBarItem.createEl("span", {
       cls: "status-bar-speed-display",
     });
@@ -365,7 +366,6 @@ export class IconEventHandler {
     this.speedDisplayEl.style.color = "var(--text-normal)";
     this.updateSpeedDisplay();
 
-    // Add increase speed button (faster)
     this.createStatusBarIcon(
       "plus",
       "speed-increase",
@@ -377,18 +377,18 @@ export class IconEventHandler {
 
   private updateSpeedDisplay(): void {
     if (this.speedDisplayEl) {
-      const currentSpeed = this.pollyService.getSpeed();
+      const currentSpeed = this.ttsService.getSpeed();
       this.speedDisplayEl.textContent = `${currentSpeed.toFixed(1)}x`;
       this.speedDisplayEl.title = `Current playback speed: ${currentSpeed.toFixed(1)}x`;
     }
   }
 
   private decreaseSpeed(): void {
-    const currentSpeed = this.pollyService.getSpeed();
+    const currentSpeed = this.ttsService.getSpeed();
     const newSpeed = Math.max(0.5, Math.round((currentSpeed - 0.1) * 10) / 10);
 
     if (newSpeed !== currentSpeed) {
-      this.pollyService.setSpeed(newSpeed);
+      this.ttsService.setSpeed(newSpeed);
       this.voice.settings.SPEED = newSpeed;
       this.voice.saveSettings();
       this.updateSpeedDisplay();
@@ -396,11 +396,11 @@ export class IconEventHandler {
   }
 
   private increaseSpeed(): void {
-    const currentSpeed = this.pollyService.getSpeed();
+    const currentSpeed = this.ttsService.getSpeed();
     const newSpeed = Math.min(1.9, Math.round((currentSpeed + 0.1) * 10) / 10);
 
     if (newSpeed !== currentSpeed) {
-      this.pollyService.setSpeed(newSpeed);
+      this.ttsService.setSpeed(newSpeed);
       this.voice.settings.SPEED = newSpeed;
       this.voice.saveSettings();
       this.updateSpeedDisplay();
@@ -408,7 +408,6 @@ export class IconEventHandler {
   }
 
   private addVoiceControlsSeparator(): void {
-    // Add separator after all voice controls to separate from other plugins
     const separator = this.statusBarItem.createEl("span", {
       cls: "status-bar-separator",
     });
@@ -419,7 +418,6 @@ export class IconEventHandler {
   }
 
   private addSpeedControlStyles(): void {
-    // Check if styles already added
     if (document.getElementById("voice-speed-control-styles")) return;
 
     const style = document.createElement("style");
@@ -432,28 +430,28 @@ export class IconEventHandler {
         font-variant-numeric: tabular-nums;
         transition: background-color 0.2s ease;
       }
-      
+
       .status-bar-speed-display:hover {
         background: var(--background-modifier-active-hover);
       }
-      
+
       .status-bar-icon.speed-decrease,
       .status-bar-icon.speed-increase {
         opacity: 0.8;
         transition: opacity 0.2s ease, transform 0.1s ease;
       }
-      
+
       .status-bar-icon.speed-decrease:hover,
       .status-bar-icon.speed-increase:hover {
         opacity: 1;
         transform: scale(1.1);
       }
-      
+
       .status-bar-icon.speed-decrease:active,
       .status-bar-icon.speed-increase:active {
         transform: scale(0.95);
       }
-      
+
       .status-bar-separator {
         opacity: 0.3;
         user-select: none;
@@ -476,7 +474,7 @@ export class IconEventHandler {
         position: relative;
         align-self: center;
       }
-      
+
       .voice-progress-bar {
         height: 100%;
         width: 0%;
@@ -484,15 +482,15 @@ export class IconEventHandler {
         border-radius: 2px;
         transition: width 0.3s ease, background-color 0.3s ease;
       }
-      
+
       .voice-progress-bar-container.visible {
         display: block;
       }
-      
+
       .voice-progress-bar-container.error {
         background: var(--background-modifier-error);
       }
-      
+
       .voice-progress-bar-container.error .voice-progress-bar {
         background: var(--text-error);
         width: 100% !important;
@@ -510,7 +508,6 @@ export class IconEventHandler {
       cls: "voice-progress-bar",
     });
 
-    // Initially hidden
     this.hideProgressBar();
   }
 
@@ -546,16 +543,10 @@ export class IconEventHandler {
   }
 
   private handleError(errorMessage: string): void {
-    // Show error state in progress bar
     this.showErrorState();
-
-    // Reset spinning icons back to play state
     this.resetIconsToPlayState();
-
-    // Show error notification to user
     new Notice(`🔊 Voice Plugin: ${errorMessage}`, 5000);
 
-    // Auto-hide error after 3 seconds
     setTimeout(() => {
       this.hideProgressBar();
     }, 3000);
@@ -573,31 +564,21 @@ export class IconEventHandler {
   }
 
   private onCanPlayThrough(): void {
-    // Hide progress bar when audio is ready to play
     this.hideProgressBar();
   }
 
-  /**
-   * Show the download button
-   */
   private showDownloadButton(): void {
     if (this.downloadIconEl) {
       this.downloadIconEl.style.display = "";
     }
   }
 
-  /**
-   * Hide the download button
-   */
   private hideDownloadButton(): void {
     if (this.downloadIconEl) {
       this.downloadIconEl.style.display = "none";
     }
   }
 
-  /**
-   * Update download button visibility based on whether cached audio exists for current file
-   */
   private updateDownloadButtonVisibility(): void {
     const activeFile = this.plugin.app.workspace.getActiveFile();
     if (!activeFile) {
@@ -605,8 +586,7 @@ export class IconEventHandler {
       return;
     }
 
-    // Check if cached audio exists for this file
-    const audioBlob = this.pollyService.getLastGeneratedAudio(activeFile.path);
+    const audioBlob = this.ttsService.getLastGeneratedAudio(activeFile.path);
     if (audioBlob) {
       this.showDownloadButton();
     } else {
@@ -614,21 +594,15 @@ export class IconEventHandler {
     }
   }
 
-  /**
-   * Handle download audio button click
-   * Retrieves cached audio blob and saves it as MP3 file
-   */
   private async handleDownloadAudio(): Promise<void> {
     try {
-      // Get current file path for validation
       const activeFile = this.plugin.app.workspace.getActiveFile();
       if (!activeFile) {
         new Notice("No active file found");
         return;
       }
 
-      // Get the cached audio blob from Polly service with file path validation
-      const audioBlob = this.pollyService.getLastGeneratedAudio(
+      const audioBlob = this.ttsService.getLastGeneratedAudio(
         activeFile.path,
       );
 
@@ -639,7 +613,6 @@ export class IconEventHandler {
         return;
       }
 
-      // Use AudioFileManager to save and embed
       await this.audioFileManager.downloadAndEmbed(audioBlob);
     } catch (error) {
       console.error("Error downloading audio:", error);

@@ -1,6 +1,8 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import { Voice } from "../utils/VoicePlugin";
-import { VOICES } from "./VoiceSettings";
+import { getVoicesForProvider } from "./VoiceSettings";
+import { AwsPollyService } from "../service/AwsPollyService";
+import { GoogleTTSService } from "../service/GoogleTTSService";
 
 export class VoiceSettingTab extends PluginSettingTab {
   plugin: Voice;
@@ -23,18 +25,15 @@ export class VoiceSettingTab extends PluginSettingTab {
   }
 
   private addSliderDirectionalIndicators(sliderEl: HTMLElement): void {
-    // Create container for the enhanced slider with indicators
     const sliderContainer = sliderEl.parentElement;
     if (!sliderContainer) return;
 
-    // Create wrapper div for slider with indicators
     const sliderWrapper = sliderContainer.createDiv();
     sliderWrapper.style.display = "flex";
     sliderWrapper.style.alignItems = "center";
     sliderWrapper.style.gap = "8px";
     sliderWrapper.style.width = "100%";
 
-    // Create left indicator (slower/minus)
     const leftIndicator = sliderWrapper.createSpan();
     leftIndicator.style.fontSize = "12px";
     leftIndicator.style.color = "var(--text-muted)";
@@ -44,10 +43,8 @@ export class VoiceSettingTab extends PluginSettingTab {
     leftIndicator.textContent = "− slower";
     leftIndicator.title = "Move left to decrease speed (slower playback)";
 
-    // Move the slider into the wrapper
     sliderWrapper.appendChild(sliderEl);
 
-    // Create right indicator (faster/plus)
     const rightIndicator = sliderWrapper.createSpan();
     rightIndicator.style.fontSize = "12px";
     rightIndicator.style.color = "var(--text-muted)";
@@ -57,31 +54,56 @@ export class VoiceSettingTab extends PluginSettingTab {
     rightIndicator.textContent = "faster +";
     rightIndicator.title = "Move right to increase speed (faster playback)";
 
-    // Style the slider to take up remaining space
     sliderEl.style.flex = "1";
   }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+
+    // TTS Provider Selection
+    new Setting(containerEl)
+      .setName("TTS Provider")
+      .setDesc("Choose the text-to-speech service provider.")
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("aws", "AWS Polly")
+          .addOption("google", "Google Cloud TTS")
+          .setValue(this.plugin.settings.TTS_PROVIDER)
+          .onChange(async (value: "aws" | "google") => {
+            this.plugin.settings.TTS_PROVIDER = value;
+            // Reset voice to first available for the new provider
+            const voices = getVoicesForProvider(value);
+            if (voices.length > 0) {
+              this.plugin.settings.VOICE = voices[0].id;
+            }
+            await this.plugin.saveSettings();
+            this.plugin.reinitializeTTSService();
+            // Re-render settings to show provider-specific options
+            this.display();
+          });
+      });
+
+    // Voice Selection
+    const voices = getVoicesForProvider(this.plugin.settings.TTS_PROVIDER);
     new Setting(containerEl)
       .setName("Voice")
       .setDesc(
         "Choose a voice tone, gender, and language for a personalized audio experience.",
       )
       .addDropdown((dropdown) => {
-        VOICES.forEach((voice) => {
+        voices.forEach((voice) => {
           dropdown.addOption(voice.id, voice.label);
         });
         dropdown
           .setValue(
-            this.plugin.getPollyService().getVoice() ||
+            this.plugin.getTTSService().getVoice() ||
               this.plugin.settings.VOICE,
           )
           .onChange(async (value) => {
             this.plugin.settings.VOICE = value;
             await this.plugin.saveSettings();
-            this.plugin.getPollyService().setVoice(value);
+            this.plugin.getTTSService().setVoice(value);
             this.plugin.iconEventHandler.updateVoiceDisplay();
           });
       });
@@ -96,20 +118,17 @@ export class VoiceSettingTab extends PluginSettingTab {
           .setLimits(0.5, 1.9, 0.1)
           .setValue(
             this.plugin.settings.SPEED ||
-              this.plugin.getPollyService().getSpeed(),
+              this.plugin.getTTSService().getSpeed(),
           )
           .setDynamicTooltip()
           .onChange(async (value) => {
-            // Round to nearest 0.1 for clean values
             const roundedValue = Math.round(value * 10) / 10;
             this.plugin.settings.SPEED = roundedValue;
             await this.plugin.saveSettings();
-            this.plugin.getPollyService().setSpeed(roundedValue);
+            this.plugin.getTTSService().setSpeed(roundedValue);
 
-            // Update the status bar speed display
             this.plugin.iconEventHandler.updateSpeedDisplayFromSettings();
 
-            // Update the tooltip text with speed description
             const speedText = this.formatSpeedText(roundedValue);
             slider.sliderEl.setAttribute(
               "title",
@@ -117,17 +136,15 @@ export class VoiceSettingTab extends PluginSettingTab {
             );
           })
           .then((slider) => {
-            // Set initial tooltip text
             const currentSpeed =
               this.plugin.settings.SPEED ||
-              this.plugin.getPollyService().getSpeed();
+              this.plugin.getTTSService().getSpeed();
             const speedText = this.formatSpeedText(currentSpeed);
             slider.sliderEl.setAttribute(
               "title",
               `${currentSpeed}x - ${speedText}`,
             );
 
-            // Add directional indicators
             this.addSliderDirectionalIndicators(slider.sliderEl);
           }),
       );
@@ -143,11 +160,19 @@ export class VoiceSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.spellOutAcronyms = value;
             await this.plugin.saveSettings();
-            // Reinitialize TextSpeaker to apply the new setting
             this.plugin.reinitializeTextSpeaker();
           }),
       );
 
+    // Provider-specific settings
+    if (this.plugin.settings.TTS_PROVIDER === "aws") {
+      this.displayAwsSettings(containerEl);
+    } else {
+      this.displayGoogleSettings(containerEl);
+    }
+  }
+
+  private displayAwsSettings(containerEl: HTMLElement): void {
     containerEl.createEl("h2", { text: "AWS" });
 
     new Setting(containerEl)
@@ -186,12 +211,10 @@ export class VoiceSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.AWS_REGION = value;
             await this.plugin.saveSettings();
-            // Reinitialize PollyService with new region
             this.plugin.reinitializePollyService();
           });
       });
 
-    // Track visibility state for Access Key ID (default: masked for security)
     let isAccessKeyVisible = false;
 
     new Setting(containerEl)
@@ -204,15 +227,13 @@ export class VoiceSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.AWS_ACCESS_KEY_ID = value;
             await this.plugin.saveSettings();
-            // Reinitialize PollyService with new credentials
             this.plugin.reinitializePollyService();
           });
-        // Start with masked input for security
         text.inputEl.type = "password";
       })
       .addExtraButton((button) => {
         button
-          .setIcon("eye") // eye icon = show (field is currently masked)
+          .setIcon("eye")
           .setTooltip("Show")
           .onClick(() => {
             isAccessKeyVisible = !isAccessKeyVisible;
@@ -226,7 +247,6 @@ export class VoiceSettingTab extends PluginSettingTab {
           });
       });
 
-    // Track visibility state for Secret Access Key (default: masked for security)
     let isSecretKeyVisible = false;
 
     new Setting(containerEl)
@@ -239,14 +259,13 @@ export class VoiceSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.AWS_SECRET_ACCESS_KEY = value;
             await this.plugin.saveSettings();
-            // Reinitialize PollyService with new credentials
             this.plugin.reinitializePollyService();
           });
         text.inputEl.type = "password";
       })
       .addExtraButton((button) => {
         button
-          .setIcon("eye") // eye icon = show (field is currently masked)
+          .setIcon("eye")
           .setTooltip("Show")
           .onClick(() => {
             isSecretKeyVisible = !isSecretKeyVisible;
@@ -260,7 +279,54 @@ export class VoiceSettingTab extends PluginSettingTab {
           });
       });
 
-    // AWS Credential Validation Section
+    this.displayCredentialValidation(containerEl, "aws");
+  }
+
+  private displayGoogleSettings(containerEl: HTMLElement): void {
+    containerEl.createEl("h2", { text: "Google Cloud TTS" });
+
+    let isApiKeyVisible = false;
+
+    new Setting(containerEl)
+      .setName("API Key")
+      .setDesc("Your Google Cloud API key with Text-to-Speech API enabled.")
+      .addText((text) => {
+        text
+          .setPlaceholder("Enter your Google Cloud API Key")
+          .setValue(this.plugin.settings.GOOGLE_API_KEY)
+          .onChange(async (value) => {
+            this.plugin.settings.GOOGLE_API_KEY = value;
+            await this.plugin.saveSettings();
+            const googleService = this.plugin.getTTSService() as GoogleTTSService;
+            if (googleService.updateCredentials) {
+              googleService.updateCredentials(value);
+            }
+          });
+        text.inputEl.type = "password";
+      })
+      .addExtraButton((button) => {
+        button
+          .setIcon("eye")
+          .setTooltip("Show")
+          .onClick(() => {
+            isApiKeyVisible = !isApiKeyVisible;
+            const inputEl =
+              button.extraSettingsEl.parentElement?.querySelector("input");
+            if (inputEl) {
+              inputEl.type = isApiKeyVisible ? "text" : "password";
+              button.setIcon(isApiKeyVisible ? "eye-off" : "eye");
+              button.setTooltip(isApiKeyVisible ? "Hide" : "Show");
+            }
+          });
+      });
+
+    this.displayCredentialValidation(containerEl, "google");
+  }
+
+  private displayCredentialValidation(
+    containerEl: HTMLElement,
+    provider: "aws" | "google",
+  ): void {
     const validationContainer = containerEl.createDiv();
     validationContainer.style.marginTop = "16px";
     validationContainer.style.padding = "12px 16px";
@@ -269,7 +335,6 @@ export class VoiceSettingTab extends PluginSettingTab {
     validationContainer.style.border =
       "1px solid var(--background-modifier-border)";
 
-    // Header and button row
     const headerRow = validationContainer.createDiv();
     headerRow.style.display = "flex";
     headerRow.style.alignItems = "center";
@@ -309,26 +374,29 @@ export class VoiceSettingTab extends PluginSettingTab {
     statusIndicator.style.flexShrink = "0";
 
     const statusText = statusContainer.createSpan();
-    statusText.textContent =
-      "Click 'Test Credentials' to verify your AWS setup";
+    statusText.textContent = `Click 'Test Credentials' to verify your ${provider === "aws" ? "AWS" : "Google Cloud"} setup`;
     statusText.style.color = "var(--text-muted)";
     statusText.style.fontSize = "12px";
     statusText.style.lineHeight = "1.3";
 
-    // Help link for AWS setup (only shown when credentials are invalid)
     const helpContainer = validationContainer.createDiv();
     helpContainer.style.marginTop = "8px";
-    helpContainer.style.display = "none"; // Hidden by default
+    helpContainer.style.display = "none";
 
     const helpText = helpContainer.createSpan();
-    helpText.textContent = "Need help with creating AWS credentials? ";
+    helpText.textContent =
+      provider === "aws"
+        ? "Need help with creating AWS credentials? "
+        : "Need help with Google Cloud API setup? ";
     helpText.style.color = "var(--text-muted)";
     helpText.style.fontSize = "11px";
 
     const helpLink = helpContainer.createEl("a");
     helpLink.textContent = "View setup guide";
     helpLink.href =
-      "https://github.com/chrisurf/obsidian-voice?tab=readme-ov-file#setting-up-your-aws-account-required";
+      provider === "aws"
+        ? "https://github.com/chrisurf/obsidian-voice?tab=readme-ov-file#setting-up-your-aws-account-required"
+        : "https://cloud.google.com/text-to-speech/docs/before-you-begin";
     helpLink.style.color = "var(--link-color)";
     helpLink.style.fontSize = "11px";
     helpLink.style.textDecoration = "none";
@@ -343,10 +411,10 @@ export class VoiceSettingTab extends PluginSettingTab {
     const updateStatus = (
       isValid: boolean | null,
       message: string,
-      isLoading = false,
+      isLoadingState = false,
       voiceCount?: number,
     ) => {
-      if (isLoading) {
+      if (isLoadingState) {
         statusIndicator.style.backgroundColor = "var(--color-orange)";
         statusIndicator.style.animation = "pulse 1.5s ease-in-out infinite";
         statusText.textContent = "Testing credentials...";
@@ -355,7 +423,7 @@ export class VoiceSettingTab extends PluginSettingTab {
         testButton.textContent = "Testing...";
         testButton.style.opacity = "0.6";
         testButton.style.cursor = "not-allowed";
-        helpContainer.style.display = "none"; // Hide help during loading
+        helpContainer.style.display = "none";
       } else {
         statusIndicator.style.animation = "none";
         testButton.disabled = false;
@@ -369,95 +437,129 @@ export class VoiceSettingTab extends PluginSettingTab {
             ? `✓ Credentials valid! Found ${voiceCount} voices available.`
             : "✓ Credentials are valid!";
           statusText.style.color = "var(--color-green)";
-          helpContainer.style.display = "none"; // Hide help when valid
+          helpContainer.style.display = "none";
         } else if (isValid === false) {
           statusIndicator.style.backgroundColor = "var(--color-red)";
           statusText.textContent = `✗ ${message}`;
           statusText.style.color = "var(--color-red)";
-          helpContainer.style.display = "block"; // Show help when invalid
+          helpContainer.style.display = "block";
         } else {
           statusIndicator.style.backgroundColor = "var(--text-muted)";
           statusText.textContent = message;
           statusText.style.color = "var(--text-muted)";
-          helpContainer.style.display = "none"; // Hide help for neutral state
+          helpContainer.style.display = "none";
         }
       }
     };
 
     const validateCredentials = async () => {
-      const accessKeyId = this.plugin.settings.AWS_ACCESS_KEY_ID;
-      const secretAccessKey = this.plugin.settings.AWS_SECRET_ACCESS_KEY;
-      const region = this.plugin.settings.AWS_REGION;
+      if (provider === "aws") {
+        const accessKeyId = this.plugin.settings.AWS_ACCESS_KEY_ID;
+        const secretAccessKey = this.plugin.settings.AWS_SECRET_ACCESS_KEY;
+        const region = this.plugin.settings.AWS_REGION;
 
-      if (!accessKeyId || !secretAccessKey || !region) {
-        updateStatus(
-          false,
-          "Please fill in all AWS credentials (Access Key ID, Secret Access Key, and Region) before testing.",
-        );
-        return;
-      }
-
-      updateStatus(null, "", true);
-
-      try {
-        // Create a temporary service instance for validation
-        const tempService = new (
-          await import("../service/AwsPollyService")
-        ).AwsPollyService(
-          {
-            credentials: {
-              accessKeyId: accessKeyId,
-              secretAccessKey: secretAccessKey,
-            },
-            region: region,
-          },
-          this.plugin.settings.VOICE,
-          this.plugin.settings.SPEED,
-        );
-
-        const result = await tempService.validateCredentials();
-
-        if (result.isValid) {
-          updateStatus(true, "", false, result.voiceCount);
-        } else {
-          updateStatus(false, result.error || "Validation failed", false);
+        if (!accessKeyId || !secretAccessKey || !region) {
+          updateStatus(
+            false,
+            "Please fill in all AWS credentials (Access Key ID, Secret Access Key, and Region) before testing.",
+          );
+          return;
         }
-      } catch (error) {
-        console.error("Credential validation error:", error);
-        updateStatus(
-          false,
-          "Unexpected error during validation. Please check your credentials and try again.",
-        );
+
+        updateStatus(null, "", true);
+
+        try {
+          const tempService = new AwsPollyService(
+            {
+              credentials: { accessKeyId, secretAccessKey },
+              region,
+            },
+            this.plugin.settings.VOICE,
+            this.plugin.settings.SPEED,
+          );
+
+          const result = await tempService.validateCredentials();
+
+          if (result.isValid) {
+            updateStatus(true, "", false, result.voiceCount);
+          } else {
+            updateStatus(false, result.error || "Validation failed", false);
+          }
+        } catch (error) {
+          console.error("Credential validation error:", error);
+          updateStatus(
+            false,
+            "Unexpected error during validation. Please check your credentials and try again.",
+          );
+        }
+      } else {
+        const apiKey = this.plugin.settings.GOOGLE_API_KEY;
+
+        if (!apiKey) {
+          updateStatus(
+            false,
+            "Please enter your Google Cloud API key before testing.",
+          );
+          return;
+        }
+
+        updateStatus(null, "", true);
+
+        try {
+          const tempService = new GoogleTTSService(
+            apiKey,
+            this.plugin.settings.VOICE,
+            this.plugin.settings.SPEED,
+          );
+
+          const result = await tempService.validateCredentials();
+
+          if (result.isValid) {
+            updateStatus(true, "", false, result.voiceCount);
+          } else {
+            updateStatus(false, result.error || "Validation failed", false);
+          }
+        } catch (error) {
+          console.error("Credential validation error:", error);
+          updateStatus(
+            false,
+            "Unexpected error during validation. Please check your API key and try again.",
+          );
+        }
       }
     };
 
-    // Automatically validate credentials when settings page opens
     const performAutoValidation = async () => {
-      const accessKeyId = this.plugin.settings.AWS_ACCESS_KEY_ID;
-      const secretAccessKey = this.plugin.settings.AWS_SECRET_ACCESS_KEY;
-      const region = this.plugin.settings.AWS_REGION;
+      if (provider === "aws") {
+        const accessKeyId = this.plugin.settings.AWS_ACCESS_KEY_ID;
+        const secretAccessKey = this.plugin.settings.AWS_SECRET_ACCESS_KEY;
+        const region = this.plugin.settings.AWS_REGION;
 
-      // Only auto-validate if all credentials are present
-      if (accessKeyId && secretAccessKey && region) {
-        // Add a small delay to let the UI render first
-        setTimeout(() => {
-          validateCredentials();
-        }, 100);
+        if (accessKeyId && secretAccessKey && region) {
+          setTimeout(() => validateCredentials(), 100);
+        } else {
+          updateStatus(
+            null,
+            "Enter your AWS credentials above, then click 'Test Credentials' to validate",
+          );
+        }
       } else {
-        // Show helpful message if credentials are missing
-        updateStatus(
-          null,
-          "Enter your AWS credentials above, then click 'Test Credentials' to validate",
-        );
+        const apiKey = this.plugin.settings.GOOGLE_API_KEY;
+
+        if (apiKey) {
+          setTimeout(() => validateCredentials(), 100);
+        } else {
+          updateStatus(
+            null,
+            "Enter your Google Cloud API key above, then click 'Test Credentials' to validate",
+          );
+        }
       }
     };
 
     testButton.addEventListener("click", validateCredentials);
-
-    // Perform automatic validation
     performAutoValidation();
 
-    // Add CSS for pulse animation
     const style = document.createElement("style");
     style.textContent = `
       @keyframes pulse {

@@ -2,6 +2,8 @@ import { DEFAULT_SETTINGS, VoiceSettings } from "../settings/VoiceSettings";
 import { VoiceSettingTab } from "../settings/VoiceSettingTab";
 import { HotkeySettings } from "../settings/HotkeySettings";
 import { AwsPollyService } from "../service/AwsPollyService";
+import { GoogleTTSService } from "../service/GoogleTTSService";
+import { TTSService } from "../service/TTSService";
 import { Plugin, Platform } from "obsidian";
 import { MarkdownHelper } from "./MarkdownHelper";
 import { IconEventHandler } from "./IconEventHandler";
@@ -10,7 +12,7 @@ import { TextSpeaker } from "./TextSpeaker";
 export class Voice extends Plugin {
   settings: VoiceSettings;
   private markdownHelper: MarkdownHelper;
-  private pollyService: AwsPollyService;
+  private ttsService: TTSService;
   private hotkeySettings: HotkeySettings;
   public iconEventHandler: IconEventHandler;
   private textSpeaker: TextSpeaker;
@@ -20,7 +22,30 @@ export class Voice extends Plugin {
     this.addSettingTab(new VoiceSettingTab(this.app, this));
     this.markdownHelper = new MarkdownHelper(this.app);
 
-    this.pollyService = new AwsPollyService(
+    this.ttsService = this.createTTSService();
+
+    this.iconEventHandler = new IconEventHandler(this, this, this.ttsService);
+    this.textSpeaker = new TextSpeaker(
+      this.ttsService,
+      this.markdownHelper,
+      this.iconEventHandler,
+      this.settings.spellOutAcronyms,
+    );
+
+    this.hotkeySettings = new HotkeySettings(this, this.ttsService);
+    this.hotkeySettings.initHotkeys();
+  }
+
+  private createTTSService(): TTSService {
+    if (this.settings.TTS_PROVIDER === "google") {
+      return new GoogleTTSService(
+        this.settings.GOOGLE_API_KEY,
+        this.settings.VOICE,
+        Number(this.settings.SPEED),
+      );
+    }
+
+    return new AwsPollyService(
       {
         credentials: {
           accessKeyId: String(this.settings.AWS_ACCESS_KEY_ID),
@@ -31,17 +56,6 @@ export class Voice extends Plugin {
       this.settings.VOICE,
       Number(this.settings.SPEED),
     );
-
-    this.iconEventHandler = new IconEventHandler(this, this, this.pollyService);
-    this.textSpeaker = new TextSpeaker(
-      this.pollyService,
-      this.markdownHelper,
-      this.iconEventHandler,
-      this.settings.spellOutAcronyms,
-    );
-
-    this.hotkeySettings = new HotkeySettings(this, this.pollyService);
-    this.hotkeySettings.initHotkeys();
   }
 
   async speakText(speed?: number) {
@@ -67,33 +81,54 @@ export class Voice extends Plugin {
   }
 
   public reinitializePollyService(): void {
-    // Only reinitialize if all credentials are present
-    if (
-      this.settings.AWS_ACCESS_KEY_ID &&
-      this.settings.AWS_SECRET_ACCESS_KEY &&
-      this.settings.AWS_REGION
-    ) {
-      this.pollyService.updateCredentials({
-        credentials: {
-          accessKeyId: String(this.settings.AWS_ACCESS_KEY_ID),
-          secretAccessKey: String(this.settings.AWS_SECRET_ACCESS_KEY),
-        },
-        region: String(this.settings.AWS_REGION),
-      });
+    if (this.settings.TTS_PROVIDER === "aws") {
+      const awsService = this.ttsService as AwsPollyService;
+      if (
+        this.settings.AWS_ACCESS_KEY_ID &&
+        this.settings.AWS_SECRET_ACCESS_KEY &&
+        this.settings.AWS_REGION
+      ) {
+        awsService.updateCredentials({
+          credentials: {
+            accessKeyId: String(this.settings.AWS_ACCESS_KEY_ID),
+            secretAccessKey: String(this.settings.AWS_SECRET_ACCESS_KEY),
+          },
+          region: String(this.settings.AWS_REGION),
+        });
+      }
     }
   }
 
-  public reinitializeTextSpeaker(): void {
-    // Recreate TextSpeaker with updated settings
+  public reinitializeTTSService(): void {
+    this.ttsService = this.createTTSService();
+
+    this.iconEventHandler.updateService(this.ttsService);
+
     this.textSpeaker = new TextSpeaker(
-      this.pollyService,
+      this.ttsService,
+      this.markdownHelper,
+      this.iconEventHandler,
+      this.settings.spellOutAcronyms,
+    );
+
+    this.hotkeySettings = new HotkeySettings(this, this.ttsService);
+  }
+
+  public reinitializeTextSpeaker(): void {
+    this.textSpeaker = new TextSpeaker(
+      this.ttsService,
       this.markdownHelper,
       this.iconEventHandler,
       this.settings.spellOutAcronyms,
     );
   }
 
-  public getPollyService(): AwsPollyService {
-    return this.pollyService;
+  public getTTSService(): TTSService {
+    return this.ttsService;
+  }
+
+  /** @deprecated Use getTTSService() instead */
+  public getPollyService(): TTSService {
+    return this.ttsService;
   }
 }
