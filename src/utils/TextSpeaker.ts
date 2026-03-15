@@ -36,6 +36,13 @@ export class TextSpeaker {
       return;
     }
 
+    // Resume if audio has already been synthesized and hasn't ended
+    const audio = this.ttsService.getAudio();
+    if (audio.src && !audio.ended) {
+      this.ttsService.playAudio(speed);
+      return;
+    }
+
     if (this.ttsService.isOperationInProgress()) {
       return;
     }
