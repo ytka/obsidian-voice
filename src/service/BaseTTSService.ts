@@ -273,6 +273,10 @@ export abstract class BaseTTSService implements TTSService {
     }
   }
 
+  hasVoiceChanged(): boolean {
+    return this.voiceChanged;
+  }
+
   isPlaying() {
     return !this.audio.paused;
   }

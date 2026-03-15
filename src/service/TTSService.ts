@@ -37,6 +37,7 @@ export interface TTSService {
     voiceCount?: number;
   }>;
   updatePlaybackRate(speed: number): void;
+  hasVoiceChanged(): boolean;
   getLanguageCode(voice: string): string;
 
   /** @deprecated Use isOperationInProgress() instead */

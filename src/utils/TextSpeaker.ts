@@ -36,9 +36,12 @@ export class TextSpeaker {
       return;
     }
 
-    // Resume if audio has already been synthesized and hasn't ended
+    // Replay or resume from cached audio if available
     const audio = this.ttsService.getAudio();
-    if (audio.src && !audio.ended) {
+    if (audio.src && audio.duration > 0 && !this.ttsService.hasVoiceChanged()) {
+      if (audio.ended) {
+        audio.currentTime = 0;
+      }
       this.ttsService.playAudio(speed);
       return;
     }
