@@ -13,13 +13,7 @@ export class MarkdownHelper {
     let content = "";
 
     if (activeView) {
-      const editor = activeView.editor;
-      const selectedText = editor.getSelection();
-      if (selectedText) {
-        content = selectedText;
-      } else {
-        content = editor.getValue();
-      }
+      content = activeView.editor.getValue();
       return content;
     }
 

@@ -96,22 +96,27 @@ function smartSplit(content: string, maxSize: number): string[] {
 /**
  * Split a large segment that doesn't fit in one chunk
  * Try to split at prosody boundaries, then at sentence boundaries
+ * Ensures split never occurs inside an XML tag
  */
 function splitLargeSegment(segment: string, maxSize: number): string[] {
   const chunks: string[] = [];
   let remaining = segment;
 
   while (remaining.length + 15 > maxSize) {
-    // Try to find a good split point
     let splitPoint = findSplitPoint(remaining, maxSize - 15);
 
     if (splitPoint === -1) {
-      // No good split point found, force split at maxSize
-      splitPoint = maxSize - 15;
+      // No good split point found, force split but avoid mid-tag
+      splitPoint = findSafeForcePoint(remaining, maxSize - 15);
     }
 
-    chunks.push(remaining.substring(0, splitPoint));
-    remaining = remaining.substring(splitPoint);
+    const chunk = remaining.substring(0, splitPoint);
+    const repaired = repairUnclosedTags(chunk);
+    chunks.push(repaired);
+
+    // Prepend any tags that were open at the split point
+    const reopened = getReopeningTags(chunk);
+    remaining = reopened + remaining.substring(splitPoint);
   }
 
   if (remaining.trim()) {
@@ -119,6 +124,90 @@ function splitLargeSegment(segment: string, maxSize: number): string[] {
   }
 
   return chunks;
+}
+
+/**
+ * Find a safe forced split point that avoids cutting inside XML tags
+ */
+function findSafeForcePoint(text: string, maxPos: number): number {
+  let pos = Math.min(maxPos, text.length);
+
+  // If we're inside a tag, back up to before the tag
+  const lastOpenBracket = text.lastIndexOf("<", pos);
+  const lastCloseBracket = text.lastIndexOf(">", pos);
+
+  if (lastOpenBracket > lastCloseBracket) {
+    // We're inside a tag, back up to before '<'
+    pos = lastOpenBracket;
+  }
+
+  // Ensure we don't return 0 (infinite loop)
+  return pos > 0 ? pos : Math.min(maxPos, text.length);
+}
+
+/**
+ * Close any unclosed tags in a chunk
+ */
+function repairUnclosedTags(chunk: string): string {
+  const openTagStack: string[] = [];
+  const tagRegex = /<\/?([a-zA-Z][a-zA-Z0-9]*)[^>]*\/?>/g;
+  let match;
+
+  while ((match = tagRegex.exec(chunk)) !== null) {
+    const fullMatch = match[0];
+    const tagName = match[1];
+
+    if (tagName === "speak") continue;
+
+    if (fullMatch.endsWith("/>")) {
+      // Self-closing tag, skip
+      continue;
+    } else if (fullMatch.startsWith("</")) {
+      // Closing tag
+      if (openTagStack.length > 0 && openTagStack[openTagStack.length - 1] === tagName) {
+        openTagStack.pop();
+      }
+    } else {
+      // Opening tag
+      openTagStack.push(tagName);
+    }
+  }
+
+  // Close unclosed tags in reverse order
+  let result = chunk;
+  for (let i = openTagStack.length - 1; i >= 0; i--) {
+    result += `</${openTagStack[i]}>`;
+  }
+  return result;
+}
+
+/**
+ * Get opening tags that need to be reopened at the start of the next chunk
+ */
+function getReopeningTags(chunk: string): string {
+  const openTagStack: { name: string; full: string }[] = [];
+  const tagRegex = /<\/?([a-zA-Z][a-zA-Z0-9]*)([^>]*)\/?>/g;
+  let match;
+
+  while ((match = tagRegex.exec(chunk)) !== null) {
+    const fullMatch = match[0];
+    const tagName = match[1];
+
+    if (tagName === "speak") continue;
+
+    if (fullMatch.endsWith("/>")) {
+      continue;
+    } else if (fullMatch.startsWith("</")) {
+      if (openTagStack.length > 0 && openTagStack[openTagStack.length - 1].name === tagName) {
+        openTagStack.pop();
+      }
+    } else {
+      // Store the full opening tag to reopen with same attributes
+      openTagStack.push({ name: tagName, full: fullMatch });
+    }
+  }
+
+  return openTagStack.map((t) => t.full).join("");
 }
 
 /**
@@ -160,10 +249,17 @@ function findSplitPoint(text: string, maxPos: number): number {
     return splitPoint + 2;
   }
 
-  // Priority 5: Sentence ending with punctuation
-  const sentenceEnd = /[.!?]\s+/.exec(searchText);
-  if (sentenceEnd && sentenceEnd.index > maxPos * 0.7) {
-    return sentenceEnd.index + sentenceEnd[0].length;
+  // Priority 5: Sentence ending with punctuation (find last match)
+  const sentenceEndRegex = /[.!?。！？]\s*/g;
+  let lastSentenceEnd: RegExpExecArray | null = null;
+  let sentenceMatch;
+  while ((sentenceMatch = sentenceEndRegex.exec(searchText)) !== null) {
+    if (sentenceMatch.index > maxPos * 0.5) {
+      lastSentenceEnd = sentenceMatch;
+    }
+  }
+  if (lastSentenceEnd) {
+    return lastSentenceEnd.index + lastSentenceEnd[0].length;
   }
 
   // Priority 6: Last space
